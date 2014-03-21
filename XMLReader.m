@@ -1,37 +1,32 @@
 //
 //  XMLReader.m
 //
-//  Created by Troy Brant on 9/18/10.
-//  Updated by Antoine Marcadet on 9/23/11.
-//  Updated by Divan Visagie on 2012-08-26
+//  Created by Troy on 9/18/10.
+//  Copyright 2010 Troy Brant. All rights reserved.
 //
 
 #import "XMLReader.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "XMLReader requires ARC support."
-#endif
+NSString *const kXMLReaderAttributeNodeKey = @"attributes";
 
-NSString *const kXMLReaderTextNodeKey		= @"text";
-NSString *const kXMLReaderAttributePrefix	= @"@";
+@interface XMLReader (Internal)
 
-@interface XMLReader ()
-
-@property (nonatomic, strong) NSMutableArray *dictionaryStack;
-@property (nonatomic, strong) NSMutableString *textInProgress;
-@property (nonatomic, strong) NSError *errorPointer;
+- (id)initWithError:(NSError **)error;
+- (NSDictionary *)objectWithData:(NSData *)data;
 
 @end
 
 
 @implementation XMLReader
 
-#pragma mark - Public methods
+#pragma mark -
+#pragma mark Public methods
 
 + (NSDictionary *)dictionaryForXMLData:(NSData *)data error:(NSError **)error
 {
     XMLReader *reader = [[XMLReader alloc] initWithError:error];
-    NSDictionary *rootDictionary = [reader objectWithData:data options:0];
+    NSDictionary *rootDictionary = [reader objectWithData:data];
+    [reader release];
     return rootDictionary;
 }
 
@@ -41,72 +36,66 @@ NSString *const kXMLReaderAttributePrefix	= @"@";
     return [XMLReader dictionaryForXMLData:data error:error];
 }
 
-+ (NSDictionary *)dictionaryForXMLData:(NSData *)data options:(XMLReaderOptions)options error:(NSError **)error
-{
-    XMLReader *reader = [[XMLReader alloc] initWithError:error];
-    NSDictionary *rootDictionary = [reader objectWithData:data options:options];
-    return rootDictionary;
-}
-
-+ (NSDictionary *)dictionaryForXMLString:(NSString *)string options:(XMLReaderOptions)options error:(NSError **)error
-{
-    NSData *data = [string dataUsingEncoding:NSUTF8StringEncoding];
-    return [XMLReader dictionaryForXMLData:data options:options error:error];
-}
-
-
-#pragma mark - Parsing
+#pragma mark -
+#pragma mark Parsing
 
 - (id)initWithError:(NSError **)error
 {
-	self = [super init];
-    if (self)
+    if (self = [super init])
     {
-        self.errorPointer = *error;
+        errorPointer = error;
     }
     return self;
 }
 
-- (NSDictionary *)objectWithData:(NSData *)data options:(XMLReaderOptions)options
+- (void)dealloc
+{
+    [dictionaryStack release];
+    [textInProgress release];
+    [super dealloc];
+}
+
+- (NSDictionary *)objectWithData:(NSData *)data
 {
     // Clear out any old data
-    self.dictionaryStack = [[NSMutableArray alloc] init];
-    self.textInProgress = [[NSMutableString alloc] init];
+    [dictionaryStack release];
+    [textInProgress release];
+    
+    dictionaryStack = [[NSMutableArray alloc] init];
+    textInProgress = [[NSMutableString alloc] init];
     
     // Initialize the stack with a fresh dictionary
-    [self.dictionaryStack addObject:[NSMutableDictionary dictionary]];
+    [dictionaryStack addObject:[NSMutableDictionary dictionary]];
     
     // Parse the XML
     NSXMLParser *parser = [[NSXMLParser alloc] initWithData:data];
-    
-    [parser setShouldProcessNamespaces:(options & XMLReaderOptionsProcessNamespaces)];
-    [parser setShouldReportNamespacePrefixes:(options & XMLReaderOptionsReportNamespacePrefixes)];
-    [parser setShouldResolveExternalEntities:(options & XMLReaderOptionsResolveExternalEntities)];
-    
     parser.delegate = self;
     BOOL success = [parser parse];
-	
+    
     // Return the stack's root dictionary on success
     if (success)
     {
-        NSDictionary *resultDict = [self.dictionaryStack objectAtIndex:0];
+        NSDictionary *resultDict = [dictionaryStack objectAtIndex:0];
         return resultDict;
     }
     
     return nil;
 }
 
-
-#pragma mark -  NSXMLParserDelegate methods
+#pragma mark -
+#pragma mark NSXMLParserDelegate methods
 
 - (void)parser:(NSXMLParser *)parser didStartElement:(NSString *)elementName namespaceURI:(NSString *)namespaceURI qualifiedName:(NSString *)qName attributes:(NSDictionary *)attributeDict
-{   
+{
     // Get the dictionary for the current level in the stack
-    NSMutableDictionary *parentDict = [self.dictionaryStack lastObject];
+    NSMutableDictionary *parentDict = [dictionaryStack lastObject];
 
     // Create the child dictionary for the new element, and initilaize it with the attributes
     NSMutableDictionary *childDict = [NSMutableDictionary dictionary];
-    [childDict addEntriesFromDictionary:attributeDict];
+//    [childDict addEntriesFromDictionary:attributeDict]; // remove by lipeng
+    if ([attributeDict count] > 0) { // add by lipeng
+        [childDict setObject:attributeDict forKey:kXMLReaderAttributeNodeKey];
+    }
     
     // If there's already an item for this key, it means we need to create an array
     id existingValue = [parentDict objectForKey:elementName];
@@ -138,39 +127,44 @@ NSString *const kXMLReaderAttributePrefix	= @"@";
     }
     
     // Update the stack
-    [self.dictionaryStack addObject:childDict];
+    [dictionaryStack addObject:childDict];
 }
 
 - (void)parser:(NSXMLParser *)parser didEndElement:(NSString *)elementName namespaceURI:(NSString *)namespaceURI qualifiedName:(NSString *)qName
 {
     // Update the parent dict with text info
-    NSMutableDictionary *dictInProgress = [self.dictionaryStack lastObject];
-    
+//    NSMutableDictionary *dictInProgress = [dictionaryStack lastObject];
+    [dictionaryStack removeLastObject];// add by lipeng
     // Set the text property
-    if ([self.textInProgress length] > 0)
+    if ([textInProgress length] > 0 && ![textInProgress isEqualToString:@"\n"])
     {
-        // trim after concatenating
-        NSString *trimmedString = [self.textInProgress stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        [dictInProgress setObject:[trimmedString mutableCopy] forKey:kXMLReaderTextNodeKey];
-
+//        [dictInProgress setObject:textInProgress forKey:kXMLReaderTextNodeKey];  // remove by lipeng
+        NSString *trimmedString = [[textInProgress stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] retain];
+        NSMutableDictionary *dictInProgress = [dictionaryStack lastObject];
+        [dictInProgress setObject:trimmedString forKey:elementName];
+        [trimmedString release];
+        
         // Reset the text
-        self.textInProgress = [[NSMutableString alloc] init];
+        textInProgress = [[NSMutableString alloc] init];
+    } else {
+        [textInProgress release];
+        textInProgress = [[NSMutableString alloc] init];
     }
     
     // Pop the current dict
-    [self.dictionaryStack removeLastObject];
+//    [dictionaryStack removeLastObject]; // remove by lipeng
 }
 
 - (void)parser:(NSXMLParser *)parser foundCharacters:(NSString *)string
 {
     // Build the text value
-    [self.textInProgress appendString:string];
+    [textInProgress appendString:string];
 }
 
 - (void)parser:(NSXMLParser *)parser parseErrorOccurred:(NSError *)parseError
 {
     // Set the error pointer to the parser's error object
-    self.errorPointer = parseError;
+    *errorPointer = parseError;
 }
 
 @end
